@@ -221,7 +221,7 @@ def snapshot_data(r,bundle,workspace):
             seen.add(p['url']); ordered.append(p)
     return structure,ordered,terms
 
-from extraction import money_matches
+from extraction import money_matches, tariff_clause, rent_amount_needs_review
 
 def applicable_days(text):
     s=text.lower().replace('–','-').replace('—','-')
@@ -247,43 +247,16 @@ def pricing_rules(r,text):
     for clause in clauses:
         amounts=money_matches(clause)
         if not amounts:continue
-        low=clause.lower(); days=applicable_days(clause); service=None; kind='unresolved'
-        if re.search(r'залог|депозит|обеспечительн\w* платеж',low):kind='refundable_deposit'
-        elif re.search(r'предоплат|аванс|бронирован|бронь',low):kind='prepayment'
-        elif re.search(r'сервисн\w* сбор|комисси|свадебн\w* наценк',low):kind='mandatory_fee';service='service_fee'
-        elif re.search(r'(?:свыше|более)\s*\d+\s*(?:гост|чел)|доплат[^.!\n]{0,35}(?:гост|чел)|(?:дополн|кажд)[^.!\n]{0,20}гост',low):kind='extra_guests'
-        elif re.search(r'уборк|клининг|вывоз мусор',low):kind='mandatory_fee';service='cleaning'
-        elif re.search(r'бель|комплект|полотенц',low):kind='service';service='linen'
-        elif 'саун' in low:kind='service';service='sauna'
-        elif re.search(r'\bбан[яию]\b',low):kind='service';service='banya'
-        elif re.search(r'хамм?ам',low):kind='service';service='hammam'
-        elif re.search(r'\bчан',low):kind='service';service='hot_tub'
-        elif 'бассейн' in low:kind='service';service='pool'
-        elif 'повар' in low:kind='service';service='cook'
-        elif 'официант' in low:kind='service';service='waiter'
-        elif re.search(r'стоимост|цена|будн|выходн|пятниц|суббот|воскресень|\bп[нт]\b|\bс[бв]\b|\bвс\b',low):kind='rent_base'
+        low=clause.lower(); days=applicable_days(clause)
         if any(x in low for x in ['новый год','новогод','31.12','январ','выпускн']) or re.search(r'\bнг\b|\d+\s*янв\b',low):continue
-        unit='per_stay'; period='per_stay'; qty=1
-        if kind=='rent_base':unit='per_night'
-        if re.search(r'/(?:\s*ч(?:ел|еловек))|за (?:каждого )?(?:человека|гостя)|р\.?\s*(?:с|за)\s*чел',low):unit='per_guest'
-        if re.search(r'за\s*(?:1\s*)?час|/\s*час|в час',low):unit='per_hour'
-        if re.search(r'(?:за|/)\s*(\d+)\s*час',low):
-            qty=int(re.search(r'(?:за|/)\s*(\d+)\s*час',low).group(1));unit='per_session'
-        if re.search(r'(?:за|/)\s*комплект|комплект[^.!]{0,12}\d',low):unit='per_bed_set'
-        if re.search(r'в сутки|/\s*сут',low):period='per_night'
-        package=bool(kind=='rent_base' and re.search(r'полные выходные|за\s*(?:2|дво[еи])\s*сут',low))
-        if package:unit='package'
-        threshold=re.search(r'(?:до|свыше|более)\s*(\d+)\s*(?:чел|гост)',low)
-        scope='unknown'
-        if re.search(r'ночующ|с проживан|спальн\w* мест',low):scope='overnight_guests'
-        elif re.search(r'без (?:проживан|ноч[её]в)|дневн\w* гост',low):scope='day_only_guests'
-        elif re.search(r'каждого человека|всех гостей|включая дневных',low):scope='all_guests'
+        tariff=tariff_clause(clause)
+        kind=tariff['kind'];service=tariff['service_id'];unit=tariff['unit'];period=tariff['period'];package=tariff['package']
         optional=kind=='service'
         rule={
           'id':r['id']+':parsed:'+str(len(rules)), 'listing_id':r['id'],'kind':kind,'service_id':service,
           'amount':amounts[0][0],'amount_max':amounts[1][0] if len(amounts)==2 and re.search(r'\d\s*[-–]\s*\d',low) else None,
-          'unit':unit,'period':period,'session_hours':qty if unit=='per_session' else None,
-          'guest_scope':scope,'included_guests':int(threshold.group(1)) if threshold else None,
+          'unit':unit,'period':period,'session_hours':tariff['session_hours'],
+          'guest_scope':tariff['guest_scope'],'included_guests':tariff['included_guests'],
           'conditions':{'weekdays':[days[0]] if package and days else days,'nights':2 if package else None,'unknown_weekdays':kind=='rent_base' and bool(re.search(r'будни|будн[иеы]|выходн',low)) and not bool(days),'date_policy_requires_confirmation':bool(re.search(r'праздни',low))},
           'optional':optional,'review_status':'machine_extracted',
           'value_type':'from' if re.search(r'\bот\s*\d',low) else ('multiple_or_range' if len(amounts)>1 else 'published'),
@@ -339,6 +312,9 @@ def pricing_rules(r,text):
         rules=[q for q in rules if (q.get('kind'),q.get('service_id')) not in kinds]+checked
     unique={}
     for q in rules:
+        if rent_amount_needs_review(q['kind'],q.get('amount') or 0):
+            q['ambiguous']=True
+            q['ambiguity_reason']='Слишком малая сумма аренды в источнике: уточнить, не пропущены ли тысячи рублей'
         key=(q['kind'],q.get('service_id'),q.get('amount'),q.get('unit'),tuple(q.get('conditions',{}).get('weekdays') or []),q.get('included_guests'))
         if key not in unique:unique[key]=q
     return list(unique.values())
