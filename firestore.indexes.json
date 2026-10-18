@@ -1,0 +1,27 @@
+{
+  "indexes": [],
+  "fieldOverrides": [
+    { "collectionGroup": "chunks", "fieldPath": "items", "indexes": [] },
+    {
+      "collectionGroup": "listings",
+      "fieldPath": "description",
+      "indexes": []
+    },
+    { "collectionGroup": "listings", "fieldPath": "searchText", "indexes": [] },
+    { "collectionGroup": "listings", "fieldPath": "rules", "indexes": [] },
+    { "collectionGroup": "listings", "fieldPath": "photos", "indexes": [] },
+    { "collectionGroup": "listings", "fieldPath": "features", "indexes": [] },
+    {
+      "collectionGroup": "listings",
+      "fieldPath": "numberEvidence",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "listings",
+      "fieldPath": "rawPriceText",
+      "indexes": []
+    },
+    { "collectionGroup": "history", "fieldPath": "after", "indexes": [] },
+    { "collectionGroup": "history", "fieldPath": "changes", "indexes": [] }
+  ]
+}

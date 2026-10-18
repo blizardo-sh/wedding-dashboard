@@ -1,0 +1,101 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function verifiedGoogle() {
+      return request.auth != null && request.auth.token.email_verified == true
+        && request.auth.token.firebase.sign_in_provider == 'google.com';
+    }
+    function membership() { return get(/databases/$(database)/documents/members/$(request.auth.token.email)); }
+    function member() { return verifiedGoogle() && membership().data.active == true && membership().data.role in ['owner', 'editor']; }
+    function owner() { return member() && membership().data.role == 'owner'; }
+    function staging(version) {
+      return !exists(/databases/$(database)/documents/runtime/catalog)
+        || get(/databases/$(database)/documents/runtime/catalog).data.version != version;
+    }
+    function decisionValid() {
+      let d=request.resource.data;
+      return d.keys().hasOnly(['favorite','status','note','preferredOfferingId','confirmation','terms','confirmations','termsByOffering','splitListingIds','mergedInto','revision','updatedBy','updatedAt','lastEventId'])
+        && d.keys().hasAll(['revision','updatedBy','updatedAt','lastEventId'])
+        && d.revision is int && d.revision > 0
+        && d.updatedBy == request.auth.uid && d.updatedAt == request.time
+        && d.lastEventId is string && d.lastEventId.size() < 100
+        && (!('favorite' in d) || d.favorite is bool)
+        && (!('status' in d) || d.status in ['new','contacted','rejected','finalist'])
+        && (!('note' in d) || (d.note is string && d.note.size() <= 20000))
+        && (!('preferredOfferingId' in d) || d.preferredOfferingId == null || d.preferredOfferingId is string)
+        && (!('mergedInto' in d) || d.mergedInto == null || d.mergedInto is string)
+        && (!('splitListingIds' in d) || (d.splitListingIds is list && d.splitListingIds.size() <= 100))
+        && (!('terms' in d) || d.terms == null || (d.terms is map && d.terms.offeringId is string && d.terms.comment is string))
+        && (!('confirmations' in d) || (d.confirmations is map && d.confirmations.size() <= 100))
+        && (!('termsByOffering' in d) || (d.termsByOffering is map && d.termsByOffering.size() <= 100))
+        && (!('confirmation' in d) || d.confirmation == null || (d.confirmation is map
+          && d.confirmation.total is number && d.confirmation.total >= 0 && d.confirmation.total <= 100000000
+          && d.confirmation.scenarioKey is string && d.confirmation.offeringId is string
+          && d.confirmation.comment is string && d.confirmation.comment.size() > 0));
+    }
+    function hasAudit(houseId) {
+      let d=request.resource.data;
+      let event=getAfter(/databases/$(database)/documents/history/$(d.lastEventId)).data;
+      return event.houseId == houseId && event.revision == d.revision
+        && event.actorUid == request.auth.uid && event.at == request.time && event.after == d;
+    }
+    match /members/{email} {
+      allow get: if verifiedGoogle() && (request.auth.token.email == email || owner());
+      allow list: if owner();
+      allow create, update: if owner()
+        && request.resource.data.keys().hasOnly(['role','active','updatedBy','updatedAt'])
+        && request.resource.data.role in ['owner','editor'] && request.resource.data.active is bool
+        && request.resource.data.updatedBy == request.auth.uid && request.resource.data.updatedAt == request.time;
+      allow delete: if false;
+    }
+    match /decisions/{houseId} {
+      allow read: if member();
+      allow create: if member() && decisionValid() && request.resource.data.revision == 1 && hasAudit(houseId);
+      allow update: if member() && decisionValid() && request.resource.data.revision == resource.data.revision+1 && hasAudit(houseId);
+      allow delete: if false;
+    }
+    match /history/{eventId} {
+      allow read: if member();
+      allow create: if member()
+        && request.resource.data.keys().hasOnly(['houseId','revision','actorUid','at','changes','after'])
+        && request.resource.data.houseId is string && request.resource.data.revision is int
+        && request.resource.data.actorUid == request.auth.uid && request.resource.data.at == request.time
+        && request.resource.data.changes is map
+        && request.resource.data.after is map
+        && getAfter(/databases/$(database)/documents/decisions/$(request.resource.data.houseId)).data.lastEventId == eventId
+        && getAfter(/databases/$(database)/documents/decisions/$(request.resource.data.houseId)).data.revision == request.resource.data.revision
+        && getAfter(/databases/$(database)/documents/decisions/$(request.resource.data.houseId)).data == request.resource.data.after;
+      allow update, delete: if false;
+    }
+    match /catalogVersions/{version}/chunks/{chunkId} {
+      allow read: if member();
+      allow create, update: if owner() && staging(version) && request.resource.data.keys().hasOnly(['items']) && request.resource.data.items is list;
+      allow delete: if false;
+    }
+    match /catalogVersions/{version}/listings/{listingId} {
+      allow read: if member();
+      allow create, update: if owner() && staging(version) && request.resource.data.id == listingId
+        && request.resource.data.description is string && request.resource.data.source is string;
+      allow delete: if false;
+    }
+    match /runtime/catalog {
+      allow read: if member();
+      allow create, update: if owner()
+        && request.resource.data.keys().hasOnly(['schemaVersion','version','generatedAt','stats','chunkCount','updatedAt','updatedBy','lastImportEventId'])
+        && request.resource.data.version is string && request.resource.data.stats is map
+        && request.resource.data.chunkCount is int && request.resource.data.chunkCount > 0
+        && request.resource.data.updatedBy == request.auth.uid && request.resource.data.updatedAt == request.time
+        && getAfter(/databases/$(database)/documents/imports/$(request.resource.data.lastImportEventId)).data.version == request.resource.data.version
+        && getAfter(/databases/$(database)/documents/imports/$(request.resource.data.lastImportEventId)).data.actorUid == request.auth.uid;
+      allow delete: if false;
+    }
+    match /imports/{eventId} {
+      allow read: if owner();
+      allow create: if owner() && request.resource.data.keys().hasOnly(['version','actorUid','at','stats'])
+        && request.resource.data.actorUid == request.auth.uid && request.resource.data.at == request.time
+        && getAfter(/databases/$(database)/documents/runtime/catalog).data.lastImportEventId == eventId;
+      allow update, delete: if false;
+    }
+    match /{document=**} { allow read, write: if false; }
+  }
+}
