@@ -11,6 +11,12 @@ export const DEFAULT_SCENARIO = {
   servicePeople: {},
 };
 export const SERVICES = [
+  {
+    id: "cleaning",
+    label: "Уборка",
+    unit: "сеанс",
+    defaultQuantity: 1,
+  },
   { id: "sauna", label: "Сауна", unit: "ч", defaultQuantity: 3 },
   { id: "banya", label: "Баня", unit: "ч", defaultQuantity: 3 },
   { id: "hammam", label: "Хамам", unit: "ч", defaultQuantity: 2 },
@@ -720,7 +726,9 @@ export function quoteOffering(offering, s, decision = {}) {
         days.some((d) => applies(r, d, s, days)),
     );
     if (
-      !applicable.some((r) => ["service", "included_service"].includes(r.kind))
+      !applicable.some((r) =>
+        ["service", "mandatory_fee", "included_service"].includes(r.kind),
+      )
     )
       issue(
         "service_price_" + service,
@@ -774,7 +782,8 @@ export function quoteOffering(offering, s, decision = {}) {
     !allRules.some(
       (r) =>
         r.service_id === "cleaning" &&
-        ["mandatory_fee", "included_service"].includes(r.kind) &&
+        (["mandatory_fee", "included_service"].includes(r.kind) ||
+          (r.kind === "service" && r.optional === true)) &&
         !r.ambiguous &&
         days.some((d) => applies(r, d, s, days)),
     )

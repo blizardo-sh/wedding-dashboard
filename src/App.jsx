@@ -49,7 +49,6 @@ import {
   scenarioDays,
   scenarioKey,
   quoteOffering,
-  selectQuote,
 } from "./domain/pricing.mjs";
 import {
   FILTERS,
@@ -61,6 +60,13 @@ import {
   projectHouses,
 } from "./domain/filters.mjs";
 import { decisionForHouse } from "./domain/decisions.mjs";
+import {
+  PRICE_MODES,
+  normalizePriceMode,
+  priceView,
+  comparePriceRows,
+  selectPriceCandidate,
+} from "./domain/price-view.mjs";
 
 const rub = new Intl.NumberFormat("ru-RU", {
   style: "currency",
@@ -228,37 +234,46 @@ function Source({ id }) {
     <span className={"source source-" + id}>{SOURCE_LABELS[id] || id}</span>
   );
 }
-function QuotePrice({ q, offering, large = false }) {
-  const published =
-    q.status === "partial" &&
-    !q.components.some((c) => ["rent_base", "owner_quote"].includes(c.kind));
-  const value = published
-    ? offering.publishedPrice > 0
-      ? offering.publishedPrice
-      : null
-    : (q.total ?? q.knownSubtotal);
+function PriceModeSwitch({ priceMode, setPriceMode }) {
+  return (
+    <div
+      className="price-mode-switch"
+      role="group"
+      aria-label="Какую стоимость показывать"
+    >
+      {Object.entries(PRICE_MODES).map(([id, label]) => (
+        <button
+          key={id}
+          type="button"
+          aria-pressed={priceMode === id}
+          className={priceMode === id ? "active" : ""}
+          onClick={() => setPriceMode(id)}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+}
+function QuotePrice({ q, offering, large = false, priceMode = "full" }) {
+  const price = priceView(offering, q, priceMode);
   return (
     <div className={"quote-price " + (large ? "large" : "")}>
       <strong>
-        {published && Number.isFinite(value) ? "от " : ""}
-        {money(value)}
+        {price.amount === null
+          ? priceMode === "listing"
+            ? "Не указана"
+            : "Не рассчитана"
+          : `${price.from ? "от " : ""}${money(price.amount)}`}
       </strong>
-      <span className={q.status === "confirmed" ? "good" : "muted"}>
-        {q.status === "confirmed" ? (
-          <>
-            <ShieldCheck size={13} /> Подтверждено
-          </>
-        ) : published ? (
-          "Цена объявления · не смета"
-        ) : q.status === "estimate" ? (
-          "Ориентир по условиям"
-        ) : (
-          "Известная часть"
-        )}
+      <span className={price.status === "confirmed" ? "good" : "muted"}>
+        {price.status === "confirmed" && <ShieldCheck size={13} />}{" "}
+        {price.label}
       </span>
     </div>
   );
 }
+
 function Photos({
   photos = [],
   count = photos.length,
@@ -414,7 +429,8 @@ function ScenarioBar({ scenario, setScenario }) {
             <h3>Добавить в смету</h3>
             <p>
               Услуги самой площадки. Количество указано за весь заезд.
-              Обязательные платежи учитываются всегда.
+              Обязательные платежи и обязательная уборка учитываются всегда,
+              независимо от переключателей услуг.
             </p>
           </div>
           <div className="service-options">
@@ -542,6 +558,7 @@ function AdvancedFilters({
   onClose,
   coverage,
   directions = [],
+  priceMode,
 }) {
   const [search, setSearch] = useState("");
   const groups = [...new Set(FILTERS.map((f) => f.group))];
@@ -628,6 +645,10 @@ function AdvancedFilters({
         </section>
         <section className="filter-group">
           <h3>Цена, проверка и выбор</h3>
+          <p className="fine-print">
+            Бюджет: {PRICE_MODES[priceMode]}. Полнота сметы проверяется
+            отдельно.
+          </p>
           <div className="filter-grid">
             <Numeric
               label="Цена от"
@@ -849,7 +870,15 @@ function AmenityBadges({ features, limit = 4 }) {
   );
 }
 
-function ResultCard({ row, decision, onOpen, onFavorite, selected, onSelect }) {
+function ResultCard({
+  row,
+  decision,
+  onOpen,
+  onFavorite,
+  selected,
+  onSelect,
+  priceMode,
+}) {
   const { house, offering, q } = row;
   const images = offering.photos?.length
     ? offering.photos
@@ -906,7 +935,7 @@ function ResultCard({ row, decision, onOpen, onFavorite, selected, onSelect }) {
         </div>
         <AmenityBadges features={q.features} />
         <div className="card-price">
-          <QuotePrice q={q} offering={offering} />
+          <QuotePrice q={q} offering={offering} priceMode={priceMode} />
           <button
             className="open-arrow"
             onClick={onOpen}
@@ -940,6 +969,7 @@ function ResultTable({
   open,
   save,
   columns,
+  priceMode,
 }) {
   return (
     <div className="table-wrap">
@@ -951,7 +981,7 @@ function ResultTable({
             {columns.includes("location") && <th>Расположение</th>}
             {columns.includes("capacity") && <th>Гости / ночлег</th>}
             {columns.includes("amenities") && <th>На площадке</th>}
-            <th className="price-column">Стоимость сценария</th>
+            <th className="price-column">{PRICE_MODES[priceMode]}</th>
             {columns.includes("deposit") && <th>Возвратный залог</th>}
             {columns.includes("status") && <th>Наш выбор</th>}
             <th></th>
@@ -1023,7 +1053,11 @@ function ResultTable({
                     className="price-button"
                     onClick={() => open(house.id, "price")}
                   >
-                    <QuotePrice q={q} offering={offering} />
+                    <QuotePrice
+                      q={q}
+                      offering={offering}
+                      priceMode={priceMode}
+                    />
                     <small className="price-hint">
                       {q.issues.length
                         ? `${q.issues.length} условий уточнить`
@@ -1101,24 +1135,41 @@ function Evidence({ evidence, url }) {
     </details>
   ) : null;
 }
-function Breakdown({ q, offering, detail }) {
+function Breakdown({ q, offering, detail, priceMode }) {
   const fullEvidence = (component) =>
     detail?.rules?.find((r) => r.id === component.ruleId)?.evidence ||
     component.evidence;
   return (
     <div className="breakdown">
       <div className="quote-summary">
-        <QuotePrice q={q} offering={offering} large />
+        <QuotePrice q={q} offering={offering} large priceMode={priceMode} />
         <span
-          className={"tag " + (q.status === "confirmed" ? "green" : "amber")}
+          className={
+            "tag " +
+            (priceMode === "full" && q.status === "confirmed"
+              ? "green"
+              : "amber")
+          }
         >
-          {q.status === "confirmed"
-            ? "Ответ владельца"
-            : q.status === "estimate"
-              ? "Ориентир по описанию"
-              : "Расчёт неполный"}
+          {priceMode === "listing"
+            ? "Без пересчёта сценария"
+            : q.status === "confirmed"
+              ? "Ответ владельца"
+              : q.status === "estimate"
+                ? "Ориентир по описанию"
+                : "Расчёт неполный"}
         </span>
       </div>
+      {priceMode === "listing" && (
+        <div className="full-price-reference">
+          <h4>Расчёт полной стоимости</h4>
+          <QuotePrice q={q} offering={offering} priceMode="full" />
+        </div>
+      )}
+      <p className="fine-print">
+        Аренда + доплата за гостей + обязательные платежи + выбранные услуги.
+        Залог отдельно.
+      </p>
       {q.components.map((c, i) => (
         <div className="cost-item" key={i}>
           <div>
@@ -1130,8 +1181,8 @@ function Breakdown({ q, offering, detail }) {
       ))}
       {!q.components.length && (
         <p className="muted">
-          Для выбранного сценария пока недостаточно условий. Цена объявления
-          выше не считается полной сметой.
+          Для выбранного сценария пока недостаточно условий. Нужны тариф на даты
+          и условия доплат.
         </p>
       )}
       {q.deposits.length > 0 && (
@@ -1200,9 +1251,12 @@ function HouseDrawer({
   unlink,
   split,
   rejoin,
+  priceMode,
+  setPriceMode,
 }) {
   const { house } = row;
   const [offeringId, setOfferingId] = useState(row.offering.id),
+    [sourceSelected, setSourceSelected] = useState(false),
     [tab, setTab] = useState(initialTab),
     [detail, setDetail] = useState(null),
     [detailError, setDetailError] = useState("");
@@ -1226,6 +1280,9 @@ function HouseDrawer({
       featureValue: "",
     }),
     [termsComment, setTermsComment] = useState("");
+  useEffect(() => {
+    if (!sourceSelected) setOfferingId(row.offering.id);
+  }, [row.offering.id, sourceSelected]);
   const offering =
     house.offerings.find((o) => o.id === offeringId) || row.offering;
   const q = useMemo(
@@ -1401,7 +1458,10 @@ function HouseDrawer({
               <Select
                 label="Условия конкретного объявления"
                 value={offering.id}
-                onChange={setOfferingId}
+                onChange={(id) => {
+                  setSourceSelected(true);
+                  setOfferingId(id);
+                }}
               >
                 {house.offerings.map((o) => (
                   <option key={o.id} value={o.id}>
@@ -1445,6 +1505,7 @@ function HouseDrawer({
               </button>
             ))}
           </div>
+          <PriceModeSwitch priceMode={priceMode} setPriceMode={setPriceMode} />
           {tab === "summary" && (
             <>
               <div className="facts-grid">
@@ -1466,7 +1527,12 @@ function HouseDrawer({
                   <span>от МКАД, по источнику</span>
                 </div>
               </div>
-              <QuotePrice q={q} offering={offering} large />
+              <QuotePrice
+                q={q}
+                offering={offering}
+                large
+                priceMode={priceMode}
+              />
               <button className="text-button" onClick={() => setTab("price")}>
                 Посмотреть расчёт и неизвестные условия{" "}
                 <ChevronRight size={15} />
@@ -1524,7 +1590,12 @@ function HouseDrawer({
             </>
           )}
           {tab === "price" && (
-            <Breakdown q={q} offering={offering} detail={detail} />
+            <Breakdown
+              q={q}
+              offering={offering}
+              detail={detail}
+              priceMode={priceMode}
+            />
           )}
           {tab === "description" && (
             <>
@@ -1862,7 +1933,15 @@ function HouseDrawer({
   );
 }
 
-function Compare({ rows, onClose, decisions, open, merge }) {
+function Compare({
+  rows,
+  onClose,
+  decisions,
+  open,
+  merge,
+  priceMode,
+  setPriceMode,
+}) {
   const features = [
     "pool_on_dates",
     "pool",
@@ -1899,6 +1978,7 @@ function Compare({ rows, onClose, decisions, open, merge }) {
           </IconButton>
         </div>
       </header>
+      <PriceModeSwitch priceMode={priceMode} setPriceMode={setPriceMode} />
       <div className="compare-scroll">
         <table className="compare-table">
           <thead>
@@ -1922,10 +2002,14 @@ function Compare({ rows, onClose, decisions, open, merge }) {
             </tr>
           </thead>
           <tbody>
-            {line("Стоимость", (r) => (
-              <QuotePrice q={r.q} offering={r.offering} />
+            {line(PRICE_MODES[priceMode], (r) => (
+              <QuotePrice q={r.q} offering={r.offering} priceMode={priceMode} />
             ))}
-            {line("Расшифровка", (r) => (
+            {priceMode === "listing" &&
+              line("Полный расчёт", (r) => (
+                <QuotePrice q={r.q} offering={r.offering} priceMode="full" />
+              ))}
+            {line("Состав полной стоимости", (r) => (
               <>
                 <div className="compare-costs">
                   {r.q.components.map((c, i) => (
@@ -2140,6 +2224,9 @@ export default function App() {
     ),
     [filters, setFilters] = useState(() => clone(EMPTY_FILTERS));
   const [view, setView] = useState(() => stored("wedding:view:v1", "table")),
+    [priceMode, setPriceMode] = useState(() =>
+      normalizePriceMode(stored("wedding:price-mode:v1", "full")),
+    ),
     [sort, setSort] = useState("recommended"),
     [page, setPage] = useState(0),
     [selectedIds, setSelectedIds] = useState([]),
@@ -2215,6 +2302,9 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem("wedding:columns:v1", JSON.stringify(columns));
   }, [columns]);
+  useEffect(() => {
+    localStorage.setItem("wedding:price-mode:v1", JSON.stringify(priceMode));
+  }, [priceMode]);
   const deferredSearch = useDeferredValue(filters.search);
   const effectiveFilters = useMemo(
     () => ({ ...filters, search: deferredSearch }),
@@ -2249,26 +2339,34 @@ export default function App() {
           q: quoteOffering(o, scenario, decision),
         }));
         const fitting = all.filter(({ o, q }) =>
-          offeringPasses(o, q, effectiveFilters, decision),
+          offeringPasses(o, q, effectiveFilters, decision, priceMode),
         );
         if (!fitting.length) return null;
-        const q = selectQuote(
-          fitting.map((x) => x.q),
+        const { q, o: offering } = selectPriceCandidate(
+          fitting,
           decision.preferredOfferingId,
+          priceMode,
         );
-        const offering = fitting.find((x) => x.q === q).o;
         return {
           house,
           offering,
           q,
           uncertain:
+            priceView(offering, q, priceMode).amount === null ||
             q.status === "partial" ||
             q.warnings.length > 0 ||
             q.mismatch.length > 0,
         };
       })
       .filter(Boolean);
-  }, [houses, scenario, projectedDecisions, effectiveFilters, scenarioError]);
+  }, [
+    houses,
+    scenario,
+    projectedDecisions,
+    effectiveFilters,
+    scenarioError,
+    priceMode,
+  ]);
   const rows = useMemo(() => {
     let result = allRows.filter(
       (r) =>
@@ -2289,15 +2387,14 @@ export default function App() {
           ? (a.q.numbers.distance ?? Infinity) -
             (b.q.numbers.distance ?? Infinity)
           : sort === "price_desc"
-            ? b.q.confidence - a.q.confidence || b.q.sortAmount - a.q.sortAmount
+            ? comparePriceRows(a, b, priceMode, true)
             : sort === "price"
-              ? b.q.confidence - a.q.confidence ||
-                a.q.sortAmount - b.q.sortAmount
-              : b.q.confidence - a.q.confidence ||
+              ? comparePriceRows(a, b, priceMode)
+              : (priceMode === "full" ? b.q.confidence - a.q.confidence : 0) ||
                 score(a) - score(b) ||
-                a.q.sortAmount - b.q.sortAmount,
+                comparePriceRows(a, b, priceMode),
     );
-  }, [allRows, group, projectedDecisions, sort]);
+  }, [allRows, group, projectedDecisions, sort, priceMode]);
   const coverage = useMemo(() => {
     const c = {};
     for (const h of catalog?.houses || [])
@@ -2317,7 +2414,10 @@ export default function App() {
       ].sort(),
     [catalog],
   );
-  useEffect(() => setPage(0), [effectiveFilters, scenario, group, sort]);
+  useEffect(
+    () => setPage(0),
+    [effectiveFilters, scenario, group, sort, priceMode],
+  );
   const pageSize = view === "cards" ? 18 : 30,
     pages = Math.max(1, Math.ceil(rows.length / pageSize)),
     safePage = Math.min(page, pages - 1),
@@ -2364,12 +2464,14 @@ export default function App() {
     (() => {
       const house = houses.find((h) => h.id === id);
       if (!house || scenarioError) return null;
-      const quotes = house.offerings.map((o) =>
-        quoteOffering(o, scenario, projectedDecisions[id] || {}),
-      );
-      const q = selectQuote(
-        quotes,
+      const candidates = house.offerings.map((o) => ({
+        o,
+        q: quoteOffering(o, scenario, projectedDecisions[id] || {}),
+      }));
+      const { q } = selectPriceCandidate(
+        candidates,
         projectedDecisions[id]?.preferredOfferingId,
+        priceMode,
       );
       return {
         house,
@@ -2440,6 +2542,10 @@ export default function App() {
       address: offering.address,
       source: SOURCE_LABELS[offering.source],
       url: offering.url,
+      priceMode,
+      displayedPrice: priceView(offering, q, priceMode).amount,
+      displayedPriceStatus: priceView(offering, q, priceMode).label,
+      publishedPrice: offering.publishedPrice ?? null,
       total: q.total,
       knownSubtotal: q.knownSubtotal,
       priceStatus: q.status,
@@ -2455,7 +2561,12 @@ export default function App() {
       saveFile(
         "wedding-selection.json",
         JSON.stringify(
-          { scenario, exportedAt: new Date().toISOString(), rows: data },
+          {
+            scenario,
+            priceMode,
+            exportedAt: new Date().toISOString(),
+            rows: data,
+          },
           null,
           2,
         ),
@@ -2623,6 +2734,15 @@ export default function App() {
             {scenarioError}
           </div>
         )}
+        <section className="price-mode-bar" aria-label="Режим стоимости">
+          <PriceModeSwitch priceMode={priceMode} setPriceMode={setPriceMode} />
+          <p>
+            {priceMode === "full"
+              ? "Аренда, доплата за гостей, уборка и выбранные услуги. Неизвестные суммы требуют уточнения; залог отдельно."
+              : "Исходная цена из карточки, без пересчёта под даты, гостей и выбранные услуги."}
+            <span>Сортировка и бюджет используют выбранную стоимость.</span>
+          </p>
+        </section>
         <div className="collection-layout">
           <aside className="sidebar">
             <div className="sidebar-heading">
@@ -2648,7 +2768,11 @@ export default function App() {
               />
             </div>
             <section className="side-section">
-              <h3>Бюджет на сценарий</h3>
+              <h3>
+                {priceMode === "full"
+                  ? "Бюджет на сценарий"
+                  : "Цена в объявлении"}
+              </h3>
               <div className="budget-inputs">
                 <Numeric
                   label="От"
@@ -2664,7 +2788,9 @@ export default function App() {
                 />
               </div>
               <p className="fine-print">
-                Неполные суммы — отдельно, с неизвестными платежами.
+                {priceMode === "full"
+                  ? "Неполные суммы — отдельно, с неизвестными платежами."
+                  : "Учитывается исходная цена объявления. Доплаты здесь не включаются."}
               </p>
             </section>
             <section className="side-section">
@@ -2759,8 +2885,9 @@ export default function App() {
                   {num.format(rows.length)} <span>групп домов</span>
                 </h2>
                 <p>
-                  Сметы для вашего сценария. Подтверждение у владельца —
-                  отдельно.
+                  {priceMode === "full"
+                    ? "Сметы для вашего сценария. Подтверждение у владельца — отдельно."
+                    : "Цены из карточек объявлений. Полный расчёт доступен переключателем выше."}
                 </p>
               </div>
               <div className="view-toggle" aria-label="Вид подборки">
@@ -2937,6 +3064,7 @@ export default function App() {
                   <ResultCard
                     key={row.house.id}
                     row={row}
+                    priceMode={priceMode}
                     decision={projectedDecisions[row.house.id] || {}}
                     onOpen={() => open(row.house.id)}
                     onFavorite={() =>
@@ -2958,6 +3086,7 @@ export default function App() {
                 open={open}
                 save={quickSave}
                 columns={columns}
+                priceMode={priceMode}
               />
             )}
             {rows.length > 0 && (
@@ -3029,6 +3158,7 @@ export default function App() {
           onClose={() => setFiltersOpen(false)}
           coverage={coverage}
           directions={directions}
+          priceMode={priceMode}
         />
       )}
       {openRow && (
@@ -3045,6 +3175,8 @@ export default function App() {
           unlink={unlink}
           split={split}
           rejoin={rejoin}
+          priceMode={priceMode}
+          setPriceMode={setPriceMode}
         />
       )}
       {compareOpen && comparedRows.length > 1 && (
@@ -3054,6 +3186,8 @@ export default function App() {
           decisions={projectedDecisions}
           open={open}
           merge={merge}
+          priceMode={priceMode}
+          setPriceMode={setPriceMode}
         />
       )}
       {adminOpen && (

@@ -1,3 +1,4 @@
+import { priceBudget } from "./price-view.mjs";
 export const SOURCE_LABELS = {
   mosarend: "Mosarend",
   yandex: "Яндекс Недвижимость",
@@ -95,7 +96,13 @@ export const EMPTY_FILTERS = {
   features: {},
   numbers: {},
 };
-export function offeringPasses(o, q, filters, decision = {}) {
+export function offeringPasses(
+  o,
+  q,
+  filters,
+  decision = {},
+  priceMode = "full",
+) {
   const text = filters.search?.trim().toLowerCase();
   if (text && !o.searchText.includes(text)) return false;
   if (filters.source && o.source !== filters.source) return false;
@@ -152,13 +159,7 @@ export function offeringPasses(o, q, filters, decision = {}) {
     )
       return false;
   }
-  // A partial amount cannot pass a budget as if it were a full quote. It stays in the uncertain group.
-  if (q.status !== "partial") {
-    if (filters.minPrice !== "" && q.total < Number(filters.minPrice))
-      return false;
-    if (filters.maxPrice !== "" && q.total > Number(filters.maxPrice))
-      return false;
-  }
+  if (priceBudget(o, q, filters, priceMode) === false) return false;
   return true;
 }
 
